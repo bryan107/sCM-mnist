@@ -1,2 +1,2 @@
 # sCM-mnist
-Unofficial implementation of "Simplifying, stabilizing &amp; scaling Continuous-Time consistency models" for MNIST
+Unofficial implementation of "Simplifying, Stabilizing & Scaling Continuous-Time Consistency Models" for MNIST
