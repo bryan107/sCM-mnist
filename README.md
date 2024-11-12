@@ -12,7 +12,7 @@ The code is intended to be short, and extremely easy to read and adapt to other 
 Contains the core algorithm from the paper. In particular, it implements consistency training, but modifying this to support consistency distillation is straightforward.
 
 train.py uses torch.func.jvp, which calculates the JVP in the forward pass. Only some operations support JVP, but most common operations are supported. 
-There are two exceptions: BatchNorm and Flash Attention. BatchNorm has some in-place operations that cause problems. The simple solution to this is to just avoid BatchNorm. I use GroupNorm in this implementation. Flash attention is more complicated, but the paper provides a way to calculate the JVP efficiently. I may implement this here in the future.
+There are two exceptions: BatchNorm and Flash Attention. BatchNorm has some in-place operations that cause problems. The simple solution to this is to just avoid BatchNorm. I use GroupNorm in this implementation. Flash attention is more complicated, but the paper provides a way to calculate the JVP efficiently. I may implement this here in the future. Note that normal attention (see [here](https://github.com/NVlabs/edm/blob/main/training/networks.py) for one implementation) supports JVP.
 
 ### unet.py
 
