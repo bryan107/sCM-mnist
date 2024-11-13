@@ -2,7 +2,7 @@
 # 
 # Added the following modifications:
 # - Using Positional Embeddings instead of learned embeddings (Which only work in discrete space)
-# - Using AdaGN with PixelNorm like sCM recommends
+# - Using AdaGN with PixelNorm like sCM recommends to inject time embeddings
 # - Added logvar output
 # - Using GroupNorm instead of BatchNorm: I found BatchNorm does not play nicely with JVP
 #

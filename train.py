@@ -12,16 +12,16 @@ import matplotlib.pyplot as plt
 
 @click.command()
 @click.option("--device", default="cuda", help="Device to train on")
-@click.option("--epochs", default=100, help="Number of epochs to train")
+@click.option("--epochs", default=200, help="Number of epochs to train")
 @click.option("--batch-size", default=128, help="Batch size")
-@click.option("--lr", default=1e-4, help="Learning rate")
+@click.option("--lr", default=3e-5, help="Learning rate")
 def train(device, epochs, batch_size, lr):
     # Setup model and optimizer
     model = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2, betas=(0.9, 0.99))
     sigma_data = 0.5
     
-    P_mean = 0.4
+    P_mean = -1.0
     P_std = 1.4
     
     # Load CIFAR-10
@@ -65,7 +65,7 @@ def train(device, epochs, batch_size, lr):
             x_t.requires_grad_(True)  # Enable gradients for JVP
             def model_wrapper(scaled_x_t, t):
                 pred, logvar = model(scaled_x_t, t.flatten(), return_logvar=True)
-                return -pred, logvar
+                return pred, logvar
             
             v_x = torch.cos(t) * torch.sin(t) * dxt_dt
             v_t = torch.cos(t) * torch.sin(t) * sigma_data
@@ -81,8 +81,8 @@ def train(device, epochs, batch_size, lr):
             F_theta = sigma_data * pred
             F_theta_minus = F_theta.detach()
             
-            # Warmup ratio
-            r = min(1.0, step / 1000)
+            # Warmup steps. 10000 was used in the paper. I'm using 1000 for MNIST since it's an easier dataset.
+            r = min(1.0, step / 10000)
             # Calculate gradient g using JVP rearrangement
             g = -torch.cos(t)**2 * (sigma_data * F_theta_minus - dxt_dt)
             # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
@@ -91,7 +91,7 @@ def train(device, epochs, batch_size, lr):
             g = g.detach()
             
             # Tangent normalization
-            g_norm = torch.linalg.vector_norm(g, dim=(2, 3), keepdim=True)
+            g_norm = torch.linalg.vector_norm(g, dim=(1, 2, 3), keepdim=True)
             g_norm = g_norm * np.sqrt(g_norm.numel() / g.numel())  # Multiplying by sqrt(numel(g_norm) / numel(g)) ensures that the norm is invariant to the spatial dimensions.
             g = g / (g_norm + 0.1)  # 0.1 is the constant c, can be modified but 0.1 was used in the paper
             
@@ -112,7 +112,7 @@ def train(device, epochs, batch_size, lr):
             step += 1
         
         z = torch.randn(16, 1, 28, 28, generator=torch.Generator().manual_seed(42)).to(device)
-        t = torch.pi / 2 * torch.ones(16, device=device)
+        t = 1.56454 * torch.ones(16, device=device)
         with torch.no_grad():
             pred_x0 = -sigma_data * model(z, t)
             plt.figure(figsize=(12, 12))
@@ -121,7 +121,7 @@ def train(device, epochs, batch_size, lr):
                 plt.imshow(pred_x0[i, 0].cpu().numpy(), cmap='gray')
                 plt.axis('off')
             plt.tight_layout()
-            plt.savefig(f'sample_epoch_{epoch}.png')
+            plt.savefig(f'sample_epoch_{epoch:04d}.png')
             plt.close()
         
 
