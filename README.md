@@ -24,3 +24,9 @@ There are a few changes that are necessary to ensure that training is stable:
 - Added logvar output, which is used for adaptive loss weights
   
 These changes are usually all that is necessary to ensure that training is stable for most models. 
+
+### Results
+
+Can be pretty easily improved with consistency distillation instead of training.
+
+![output](https://github.com/user-attachments/assets/24d0b243-39ed-4ee3-8b15-2a5257149126)
