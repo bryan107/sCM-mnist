@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader
 import torchvision
 import torchvision.transforms as transforms
 from tqdm import tqdm
+from toy.toy_utils import calc_karras_sigmas
 from unet import Unet
 import matplotlib.pyplot as plt
 
@@ -22,14 +23,13 @@ def train(device, epochs, batch_size, lr):
     model_pretrained = None
     
     if os.path.exists('model.pt'):
-        model.load_state_dict(torch.load('model.pt'))
+        model.load_state_dict(torch.load('model.pt'), strict=False)
         
         # Reset logvar weights for CM
-        model.logvar1 = nn.Linear(model.logvar1.in_features, model.logvar1.out_features).to(device)
-        model.logvar2 = nn.Linear(model.logvar2.in_features, model.logvar2.out_features).to(device)
+        model.logvar_linear = nn.Linear(model.logvar_linear.in_features, model.logvar_linear.out_features).to(device)
         
         model_pretrained = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
-        model_pretrained.load_state_dict(torch.load('model.pt'))
+        model_pretrained.load_state_dict(torch.load('model.pt'), strict=False)
         print("Loaded model from model.pt, performing cosistency distillation.")
         consistency_training = False
     else:
@@ -52,26 +52,31 @@ def train(device, epochs, batch_size, lr):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, 
                             num_workers=4, pin_memory=True, persistent_workers=True)
     
+    # Will use this for jvp calcs
+    def model_wrapper(scaled_x_t, t):
+        pred, logvar = model(scaled_x_t, t.flatten(), return_logvar=True)
+        return pred, logvar
+            
     step = 0
     for epoch in range(epochs):
         model.train()
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch}")
         
         for batch, _ in progress_bar:
-            images = batch.to(device)
+            x0 = batch.to(device)
             
             # Sample noise from log-normal distribution
-            sigma = torch.randn(images.shape[0], device=images.device).reshape(-1, 1, 1, 1)
+            sigma = torch.randn(x0.shape[0], device=x0.device).reshape(-1, 1, 1, 1)
             sigma = (sigma * P_std + P_mean).exp()  # Sample from proposal distribution
             t = torch.arctan(sigma / sigma_data)  # Convert to t using arctan
             
             # Generate z and x_t
-            z = torch.randn_like(images) * sigma_data
-            x_t = torch.cos(t) * images + torch.sin(t) * z
+            z = torch.randn_like(x0) * sigma_data
+            x_t = torch.cos(t) * x0 + torch.sin(t) * z
             
             if consistency_training:
                 # Estimate dx_t/dt (For consistency TRAINING)
-                dxt_dt = torch.cos(t) * z - torch.sin(t) * images
+                dxt_dt = torch.cos(t) * z - torch.sin(t) * x0
             else:
                 # For consistency DISTILLATION
                 # (model_pretrained is assumed to output v-predictions)
@@ -80,12 +85,8 @@ def train(device, epochs, batch_size, lr):
                     dxt_dt = sigma_data * pretrain_pred
             
             # Next we have to calculate g and F_theta. We can do this simultaneously with torch.func.jvp
-            def model_wrapper(scaled_x_t, t):
-                pred, logvar = model(scaled_x_t, t.flatten(), return_logvar=True)
-                return pred, logvar
-            
-            v_x = torch.sin(t) * torch.sin(t) * dxt_dt
-            v_t = torch.sin(t) * torch.sin(t)
+            v_x = torch.cos(t) * torch.sin(t) * dxt_dt / sigma_data
+            v_t = torch.cos(t) * torch.sin(t)
             F_theta, F_theta_grad, logvar = torch.func.jvp(
                 model_wrapper, 
                 (x_t / sigma_data, t),
@@ -99,9 +100,9 @@ def train(device, epochs, batch_size, lr):
             # Warmup steps. 10000 was used in the paper. I'm using 1000 for MNIST since it's an easier dataset.
             r = min(1.0, step / 10000)
             # Calculate gradient g using JVP rearrangement
-            g = -torch.cos(t) * torch.sin(t) * (sigma_data * F_theta_minus - dxt_dt)
+            g = -torch.cos(t) * torch.cos(t) * (sigma_data * F_theta_minus - dxt_dt)
             # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
-            second_term = -r * (torch.sin(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
+            second_term = -r * (torch.cos(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
             g = g + second_term
             
             # Tangent normalization
@@ -162,6 +163,129 @@ def train(device, epochs, batch_size, lr):
             os.makedirs('outputs_consistency/timesteps', exist_ok=True)
             plt.savefig(f'outputs_consistency/timesteps/epoch_{epoch:04d}.png')
             plt.close()
+            
+        # Testing gradients numerically
+        #if model_pretrained is not None:
+        #    sampling_timesteps = torch.arctan(calc_karras_sigmas(sigma_min=0.002, sigma_max=80, steps=256, rho=7) / sigma_data).to(device)
+        #    trajectory_x0 = []
+        #    trajectory_xt = []
+        #    trajectory_t = []
+        #    trajectory_grad = []
+        #    
+        #    endpoints = torch.randn(2, 1, 28, 28).to(device) * sigma_data
+        #    alphas = torch.linspace(0, 1, 64).view(-1, 1, 1, 1).to(device)
+        #    x_t = (endpoints[0] * alphas + endpoints[1] * (1 - alphas)) / torch.sqrt(alphas**2 + (1 - alphas)**2)
+        #    with torch.no_grad():
+        #        trajectory_guess = -sigma_data * model_wrapper(x_t / sigma_data, sampling_timesteps[0].repeat(x_t.shape[0]))[0]
+        #    
+        #    for t in tqdm(sampling_timesteps):
+        #        trajectory_t.append(t.cpu().numpy())
+        #        trajectory_xt.append(x_t.detach().cpu().numpy())
+        #        
+        #        t_repeated = t.repeat(x_t.shape[0]).view(-1, 1, 1, 1)
+        #    
+        #        with torch.no_grad():
+        #            dxt_dt = sigma_data * model_pretrained(x_t / sigma_data, t_repeated.flatten())
+        #        
+        #        v_x = torch.cos(t_repeated) * torch.sin(t_repeated) * dxt_dt / sigma_data
+        #        v_t = torch.cos(t_repeated) * torch.sin(t_repeated)
+        #        
+        #        with torch.no_grad():
+        #            # Calculate JVP using torch.func.jvp
+        #            F_theta, F_theta_grad, logvar = torch.func.jvp(
+        #                model_wrapper, 
+        #                (x_t / sigma_data, t_repeated),
+        #                (v_x, v_t),
+        #                has_aux=True
+        #            )
+        #            F_theta_grad = F_theta_grad.detach()
+        #            F_theta_minus = F_theta.detach()
+        #            
+        #        # Calculate predicted x0
+        #        pred_x0 = torch.cos(t) * x_t - torch.sin(t) * sigma_data * F_theta
+        #        trajectory_x0.append(pred_x0.detach().cpu().numpy())
+        #        
+        #        r = 1
+        #        # Calculate gradient g using JVP rearrangement
+        #        g = -torch.cos(t) * torch.cos(t) * (sigma_data * F_theta_minus - dxt_dt)
+        #        # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
+        #        second_term = -r * (torch.cos(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
+        #        g = g + second_term
+        #        trajectory_grad.append(torch.square(g).sum(dim=(1, 2, 3)).cpu().numpy())
+        #        
+        #        next_t = sampling_timesteps[sampling_timesteps < t]
+        #        if len(next_t) == 0:
+        #            next_t = 0
+        #        else:
+        #            next_t = next_t[0]
+        #        
+        #        # Calculate x0 prediction and update x
+        #        x_t = torch.cos(t - next_t) * x_t - torch.sin(t - next_t) * dxt_dt
+        #        x_t = x_t.detach()
+        #        
+        #    # Plot final x_0 prediction
+        #    plt.figure(figsize=(8, 8))
+        #    plt.imshow(x_t[0, 0].cpu().numpy(), cmap='gray')
+        #    plt.colorbar(label='Pixel Value')
+        #    plt.title('Final x_0 Prediction')
+        #    plt.axis('off')
+        #    plt.show()
+        #        
+        #    trajectory_x0 = np.array(trajectory_x0)
+        #    trajectory_xt = np.array(trajectory_xt)
+        #    trajectory_t = np.array(trajectory_t)
+        #    trajectory_grad = np.array(trajectory_grad)
+        #        
+        #    diff = torch.abs(x_t - trajectory_guess).mean().item()
+        #    print(f"Consistency error: {diff:.4f}")
+        #    
+        #    discrete_grad = np.zeros_like(trajectory_x0)
+        #    discrete_grad[:-1] = -np.cos(trajectory_t[:-1])[:, None, None, None, None] * (trajectory_x0[1:] - trajectory_x0[:-1]) / (trajectory_t[1:] - trajectory_t[:-1])[:, None, None, None, None]
+        #    discrete_grad = np.sum(np.square(discrete_grad), axis=(2, 3, 4))
+
+        #    # Create figure with three subplots side by side
+        #    plt.figure(figsize=(16, 4))
+
+        #    # Plot trajectory gradient 
+        #    plt.subplot(131)
+        #    plt.imshow(trajectory_grad, aspect='auto', cmap='RdBu', 
+        #              extent=[0, trajectory_grad.shape[1], 0, math.pi/2])
+        #    plt.colorbar(label='Gradient magnitude')
+        #    plt.title('Trajectory Gradient')
+        #    plt.xlabel('Initial X')
+        #    plt.ylabel('Time step')
+        #    
+        #    # Plot discrete gradient
+        #    plt.subplot(132)
+        #    plt.imshow(discrete_grad, aspect='auto', cmap='RdBu',
+        #              extent=[0, discrete_grad.shape[1], 0, math.pi/2])
+        #    plt.colorbar(label='Gradient magnitude')
+        #    plt.title('Discrete Gradient')
+        #    plt.xlabel('Initial X')
+        #    plt.ylabel('Time step')
+
+        #    # Plot difference between gradients
+        #    plt.subplot(133)
+        #    grad_diff = discrete_grad / trajectory_grad
+        #    plt.imshow(grad_diff, aspect='auto', cmap='RdBu',
+        #              extent=[0, grad_diff.shape[1], 0, math.pi/2])
+        #    plt.colorbar(label='Absolute difference')
+        #    plt.title('Gradient Difference')
+        #    plt.xlabel('Initial X')
+        #    plt.ylabel('Time step')
+
+        #    plt.tight_layout()
+        #    plt.show()
+        #    
+        #    # Plot average gradient difference along time axis
+        #    plt.figure(figsize=(8, 4))
+        #    mean_grad_diff = np.mean(grad_diff, axis=1)
+        #    plt.plot(np.linspace(math.pi/2, 0, len(mean_grad_diff)), mean_grad_diff)
+        #    plt.xlabel('Time step')
+        #    plt.ylabel('Average gradient ratio')
+        #    plt.title('Average Gradient Ratio vs Time')
+        #    plt.grid(True)
+        #    plt.show()
         
 
 if __name__ == '__main__':

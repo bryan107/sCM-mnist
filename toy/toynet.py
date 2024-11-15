@@ -23,6 +23,7 @@
 
 
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -38,7 +39,7 @@ class PositionalEmbedding(nn.Module):
     def forward(self, x):
         y = x.to(torch.float32)
         y = y.outer(self.freqs.to(torch.float32))
-        y = torch.cat([torch.sin(y), torch.cos(y)], dim=1)
+        y = torch.cat([torch.sin(y), torch.cos(y)], dim=1) * np.sqrt(2)
         return y.to(x.dtype)
     
 class Net(nn.Module):
@@ -46,12 +47,16 @@ class Net(nn.Module):
         super().__init__()
         self.time_embedding = PositionalEmbedding(embedding_dim)
         
-        self.net = nn.Sequential(
+        self.pred_net = nn.Sequential(
             nn.Linear(embedding_dim + 1, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.SiLU(), 
-            nn.Linear(hidden_dim, 2)
+            nn.SiLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        self.logvar_net = nn.Sequential(
+            nn.Linear(embedding_dim, 1, bias=False)
         )
         
     def forward(self, x, t, return_logvar=False):
@@ -61,13 +66,21 @@ class Net(nn.Module):
         # Concatenate embeddings
         h = torch.cat([x.unsqueeze(-1), t_emb], dim=-1)
         
-        # Pass through network
-        out = self.net(h)
-        preds, logvar = out[:, 0], out[:, 1]
+        # Pass through separate networks
+        preds = self.pred_net(h).squeeze(-1)
+        
         if return_logvar:
+            logvar = self.logvar_net(t_emb).squeeze(-1)
             return preds, logvar
         else:
             return preds
+        
+    def norm_logvar(self):
+        eps = 1e-8
+        for param in self.logvar_net.parameters():
+            param.data.copy_(param.data / torch.linalg.vector_norm(param.data, keepdim=True))
+
+
 
 if __name__=="__main__":
     x=torch.randn(1)

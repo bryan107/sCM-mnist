@@ -14,7 +14,7 @@ from toy_utils import *
 
 @click.command()
 @click.option("--device", default="cuda", help="Device to train on")
-@click.option("--epochs", default=1, help="Number of epochs to train")
+@click.option("--epochs", default=4, help="Number of epochs to train")
 @click.option("--batch-size", default=4096, help="Batch size")
 @click.option("--lr", default=1e-3, help="Learning rate")
 def train(device, epochs, batch_size, lr):
@@ -26,7 +26,7 @@ def train(device, epochs, batch_size, lr):
     P_mean = torch.tensor(-0.4)
     P_std = torch.tensor(1.4)
     
-    size = 1
+    size = 2048
     dataset = BimodalDataset(batch_size=batch_size, size=size, std=0.5, sigma_data=0.5)
     dataloader = DataLoader(dataset, batch_size=None, shuffle=False, 
                             num_workers=4, pin_memory=True, persistent_workers=True)
@@ -68,7 +68,8 @@ def train(device, epochs, batch_size, lr):
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
+            model.norm_logvar()
+            
             losses.append(loss.item())
             progress_bar.set_postfix({"loss": np.mean(losses), "exact_loss": ((exact_pred_x0 - pred_x0)**2).mean().item()})
             step += 1
@@ -87,7 +88,7 @@ def train(device, epochs, batch_size, lr):
             trajectory_t = []
             trajectory_x0 = []
             
-            use_exact_solution = True
+            use_exact_solution = False
             
             # Gradually denoise
             for t in sampling_timesteps:

@@ -16,13 +16,15 @@ from toy_utils import *
 @click.option("--epochs", default=200, help="Number of epochs to train")
 @click.option("--batch-size", default=4096, help="Batch size")
 @click.option("--lr", default=1e-4, help="Learning rate")
-def train(device, epochs, batch_size, lr):
+@click.option("--swap-cos", default=True, help="Swap cos for sin in the gradient calculation")
+def train(device, epochs, batch_size, lr, swap_cos):
     # Setup model and optimizer
     model = Net(embedding_dim=256, hidden_dim=512).to(device)
     model_pretrained = None
     
     if os.path.exists('toy-model.pt'):
         model.load_state_dict(torch.load('toy-model.pt'))
+        
         model_pretrained = Net(embedding_dim=256, hidden_dim=512).to(device)
         model_pretrained.load_state_dict(torch.load('toy-model.pt'))
         print("Loaded model from model.pt, performing cosistency distillation.")
@@ -31,7 +33,7 @@ def train(device, epochs, batch_size, lr):
         print("No model found, performing cosistency training.")
         consistency_training = True
         
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3, betas=(0.9, 0.99))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2, betas=(0.9, 0.99))
     sigma_data = 0.5
     
     P_mean = -1
@@ -76,8 +78,14 @@ def train(device, epochs, batch_size, lr):
                 pred, logvar = model(scaled_x_t, t.flatten(), return_logvar=True)
                 return pred, logvar
             
-            v_x = torch.sin(t) * torch.sin(t) * dxt_dt
-            v_t = torch.sin(t) * torch.sin(t)
+            # I'm likely just missing something, but I can't see why the paper multiplies F_theta_grad by cosine instead of sine (see eq. 8)
+            # Upon experimentation, it seems like both work well. I've found sine to be marginally better but it's not clear if that scales & works in fp16.
+            if not swap_cos:
+                v_x = torch.cos(t) * torch.sin(t) * dxt_dt / sigma_data
+                v_t = torch.cos(t) * torch.sin(t)
+            else:
+                v_x = torch.sin(t) * torch.sin(t) * dxt_dt / sigma_data
+                v_t = torch.sin(t) * torch.sin(t)
             F_theta, F_theta_grad, logvar = torch.func.jvp(
                 model_wrapper, 
                 (x_t / sigma_data, t),
@@ -90,9 +98,14 @@ def train(device, epochs, batch_size, lr):
             # Warmup steps. 1000 was used in the paper.
             r = min(1.0, step / 1000)
             # Calculate gradient g using JVP rearrangement
-            g = -torch.cos(t) * torch.sin(t) * (sigma_data * F_theta_minus - dxt_dt)
-            # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
-            second_term = -r * (torch.sin(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
+            if not swap_cos:
+                g = -torch.cos(t) * torch.cos(t) * (sigma_data * F_theta_minus - dxt_dt)
+                # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
+                second_term = -r * (torch.cos(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
+            else:
+                g = -torch.cos(t) * torch.sin(t) * (sigma_data * F_theta_minus - dxt_dt)
+                # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
+                second_term = -r * (torch.sin(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
             g = g + second_term
             
             # Tangent normalization
@@ -109,16 +122,16 @@ def train(device, epochs, batch_size, lr):
             
             optimizer.zero_grad()
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             optimizer.step()
-
+            model.norm_logvar()
             progress_bar.set_postfix({"loss": loss.item(), "grad_norm": grad_norm.item()})
             step += 1
         
         # Sample and plot ODE trajectory every epoch
         model.eval()
         # Start from pure noise
-        x_t = torch.linspace(-1.5, 1.5, 64, device=device)
+        x_t = torch.linspace(-1.5, 1.5, 1024, device=device)
         
         use_exact_trajectory = True
         
@@ -142,7 +155,7 @@ def train(device, epochs, batch_size, lr):
             exact_pred_x0 = exact_solution(x_t / sigma_data, t, sigma_data, dataset)
             dxt_dt = (torch.cos(t) * x_t - exact_pred_x0) / torch.sin(t)
             
-            v_x = torch.cos(t_repeated) * torch.sin(t_repeated) * dxt_dt
+            v_x = torch.cos(t_repeated) * torch.sin(t_repeated) * dxt_dt / sigma_data
             v_t = torch.cos(t_repeated) * torch.sin(t_repeated)
             with torch.no_grad():
                 # Calculate JVP using torch.func.jvp
@@ -154,6 +167,16 @@ def train(device, epochs, batch_size, lr):
                 )
                 F_theta_grad = F_theta_grad.detach()
                 F_theta_minus = F_theta.detach()
+                
+                # Numerically verify JVP calculation
+                # eps = 1e-3
+                # x_perturbed = x_t / sigma_data + eps * v_x
+                # t_perturbed = t_repeated + eps * v_t
+                # 
+                # F_theta_perturbed = model_wrapper(x_perturbed, t_perturbed)[0]
+                # numerical_grad = (F_theta_perturbed - F_theta) / eps
+                # grad_diff = torch.abs(numerical_grad - F_theta_grad).mean().item()
+                # print(f"Difference: {grad_diff:.6f}")
             
             # Calculate predicted x0
             pred_x0 = torch.cos(t) * x_t - torch.sin(t) * sigma_data * F_theta
@@ -165,9 +188,7 @@ def train(device, epochs, batch_size, lr):
             # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
             second_term = -r * (torch.cos(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
             g = g + second_term
-            g_norm = torch.abs(g)
-            g = g / (g_norm + 0.1)  # 0.1 is the constant c, can be modified but 0.1 was used in the paper
-            trajectory_grad.append((-g).cpu().numpy())
+            trajectory_grad.append(torch.abs(g).cpu().numpy())
             
             next_t = sampling_timesteps[sampling_timesteps < t]
             if len(next_t) == 0:
@@ -201,7 +222,7 @@ def train(device, epochs, batch_size, lr):
         # Calculate discrete gradient from trajectory_x0
         discrete_grad = np.zeros_like(trajectory_x0)
         discrete_grad[:-1] = -np.cos(trajectory_t[:-1, None]) * (trajectory_x0[1:] - trajectory_x0[:-1]) / (trajectory_t[1:, None] - trajectory_t[:-1, None])
-        discrete_grad[:-1] = discrete_grad[:-1] / (np.abs(discrete_grad[:-1]) + 0.1)
+        discrete_grad[:-1] = np.abs(discrete_grad[:-1])
         
         # Plot ODE trajectories in first subplot
         for i in range(trajectory_x.shape[1]):

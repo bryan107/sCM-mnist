@@ -189,9 +189,7 @@ class Unet(nn.Module):
         self.mid_block=nn.Sequential(*[ResidualBottleneck(channels[-1][1],channels[-1][1]) for i in range(2)],
                                         ResidualBottleneck(channels[-1][1],channels[-1][1]//2))
         
-        self.logvar1 = nn.Linear(time_embedding_dim, time_embedding_dim)
-        self.logvar_act = nn.SiLU()
-        self.logvar2 = nn.Linear(time_embedding_dim, 1)
+        self.logvar_linear = nn.Linear(time_embedding_dim, 1)
 
         self.final_conv=nn.Conv2d(in_channels=channels[0][0]//2,out_channels=out_channels,kernel_size=1)
 
@@ -210,7 +208,7 @@ class Unet(nn.Module):
         x=self.final_conv(x)
         
         if return_logvar:
-            logvar = self.logvar2(self.logvar_act(self.logvar1(t)))
+            logvar = self.logvar_linear(t)
             return x, logvar
         else:
             return x
