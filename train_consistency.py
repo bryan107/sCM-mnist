@@ -16,8 +16,9 @@ import matplotlib.pyplot as plt
 @click.option("--device", default="cuda", help="Device to train on")
 @click.option("--epochs", default=200, help="Number of epochs to train")
 @click.option("--batch-size", default=128, help="Batch size")
-@click.option("--lr", default=1e-3, help="Learning rate")
-def train(device, epochs, batch_size, lr):
+@click.option("--lr", default=3e-5, help="Learning rate")
+@click.option("--extra-plots", is_flag=True, help="Generate additional training plots", default=False)
+def train(device, epochs, batch_size, lr, extra_plots):
     # Setup model and optimizer
     model = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
     model_pretrained = None
@@ -36,7 +37,7 @@ def train(device, epochs, batch_size, lr):
         print("No model found, performing cosistency training.")
         consistency_training = True
         
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3, betas=(0.9, 0.99))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2, betas=(0.9, 0.99))
     sigma_data = 0.5
     
     P_mean = -1
@@ -85,6 +86,7 @@ def train(device, epochs, batch_size, lr):
                     dxt_dt = sigma_data * pretrain_pred
             
             # Next we have to calculate g and F_theta. We can do this simultaneously with torch.func.jvp
+            # This doesn't match the paper because I think the paper had a typo
             v_x = torch.cos(t) * torch.sin(t) * dxt_dt / sigma_data
             v_t = torch.cos(t) * torch.sin(t)
             F_theta, F_theta_grad, logvar = torch.func.jvp(
@@ -128,6 +130,20 @@ def train(device, epochs, batch_size, lr):
             
         torch.save(model.state_dict(), f'model_consistency.pt')
         
+        #
+        #
+        #
+        #
+        # Everything below is just for visualization and can be removed safely
+        #
+        #
+        #
+        #
+        #
+        
+        if not extra_plots:
+            continue
+        
         z = torch.randn(16, 1, 28, 28, generator=torch.Generator().manual_seed(42)).to(device)
         t = 1.56454 * torch.ones(16, device=device)
         with torch.no_grad():
@@ -165,127 +181,107 @@ def train(device, epochs, batch_size, lr):
             plt.close()
             
         # Testing gradients numerically
-        #if model_pretrained is not None:
-        #    sampling_timesteps = torch.arctan(calc_karras_sigmas(sigma_min=0.002, sigma_max=80, steps=256, rho=7) / sigma_data).to(device)
-        #    trajectory_x0 = []
-        #    trajectory_xt = []
-        #    trajectory_t = []
-        #    trajectory_grad = []
-        #    
-        #    endpoints = torch.randn(2, 1, 28, 28).to(device) * sigma_data
-        #    alphas = torch.linspace(0, 1, 64).view(-1, 1, 1, 1).to(device)
-        #    x_t = (endpoints[0] * alphas + endpoints[1] * (1 - alphas)) / torch.sqrt(alphas**2 + (1 - alphas)**2)
-        #    with torch.no_grad():
-        #        trajectory_guess = -sigma_data * model_wrapper(x_t / sigma_data, sampling_timesteps[0].repeat(x_t.shape[0]))[0]
-        #    
-        #    for t in tqdm(sampling_timesteps):
-        #        trajectory_t.append(t.cpu().numpy())
-        #        trajectory_xt.append(x_t.detach().cpu().numpy())
-        #        
-        #        t_repeated = t.repeat(x_t.shape[0]).view(-1, 1, 1, 1)
-        #    
-        #        with torch.no_grad():
-        #            dxt_dt = sigma_data * model_pretrained(x_t / sigma_data, t_repeated.flatten())
-        #        
-        #        v_x = torch.cos(t_repeated) * torch.sin(t_repeated) * dxt_dt / sigma_data
-        #        v_t = torch.cos(t_repeated) * torch.sin(t_repeated)
-        #        
-        #        with torch.no_grad():
-        #            # Calculate JVP using torch.func.jvp
-        #            F_theta, F_theta_grad, logvar = torch.func.jvp(
-        #                model_wrapper, 
-        #                (x_t / sigma_data, t_repeated),
-        #                (v_x, v_t),
-        #                has_aux=True
-        #            )
-        #            F_theta_grad = F_theta_grad.detach()
-        #            F_theta_minus = F_theta.detach()
-        #            
-        #        # Calculate predicted x0
-        #        pred_x0 = torch.cos(t) * x_t - torch.sin(t) * sigma_data * F_theta
-        #        trajectory_x0.append(pred_x0.detach().cpu().numpy())
-        #        
-        #        r = 1
-        #        # Calculate gradient g using JVP rearrangement
-        #        g = -torch.cos(t) * torch.cos(t) * (sigma_data * F_theta_minus - dxt_dt)
-        #        # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
-        #        second_term = -r * (torch.cos(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
-        #        g = g + second_term
-        #        trajectory_grad.append(torch.square(g).sum(dim=(1, 2, 3)).cpu().numpy())
-        #        
-        #        next_t = sampling_timesteps[sampling_timesteps < t]
-        #        if len(next_t) == 0:
-        #            next_t = 0
-        #        else:
-        #            next_t = next_t[0]
-        #        
-        #        # Calculate x0 prediction and update x
-        #        x_t = torch.cos(t - next_t) * x_t - torch.sin(t - next_t) * dxt_dt
-        #        x_t = x_t.detach()
-        #        
-        #    # Plot final x_0 prediction
-        #    plt.figure(figsize=(8, 8))
-        #    plt.imshow(x_t[0, 0].cpu().numpy(), cmap='gray')
-        #    plt.colorbar(label='Pixel Value')
-        #    plt.title('Final x_0 Prediction')
-        #    plt.axis('off')
-        #    plt.show()
-        #        
-        #    trajectory_x0 = np.array(trajectory_x0)
-        #    trajectory_xt = np.array(trajectory_xt)
-        #    trajectory_t = np.array(trajectory_t)
-        #    trajectory_grad = np.array(trajectory_grad)
-        #        
-        #    diff = torch.abs(x_t - trajectory_guess).mean().item()
-        #    print(f"Consistency error: {diff:.4f}")
-        #    
-        #    discrete_grad = np.zeros_like(trajectory_x0)
-        #    discrete_grad[:-1] = -np.cos(trajectory_t[:-1])[:, None, None, None, None] * (trajectory_x0[1:] - trajectory_x0[:-1]) / (trajectory_t[1:] - trajectory_t[:-1])[:, None, None, None, None]
-        #    discrete_grad = np.sum(np.square(discrete_grad), axis=(2, 3, 4))
+        if model_pretrained is not None and epoch % 5 == 0:
+            sampling_timesteps = torch.arctan(calc_karras_sigmas(sigma_min=0.002, sigma_max=80, steps=64, rho=7) / sigma_data).to(device)
+            trajectory_x0 = []
+            trajectory_xt = []
+            trajectory_t = []
+            trajectory_grad = []
+            
+            endpoints = torch.randn(2, 1, 28, 28).to(device) * sigma_data
+            alphas = torch.linspace(0, 1, 64).view(-1, 1, 1, 1).to(device)
+            x_t = (endpoints[0] * alphas + endpoints[1] * (1 - alphas)) / torch.sqrt(alphas**2 + (1 - alphas)**2)
+            with torch.no_grad():
+                trajectory_guess = -sigma_data * model_wrapper(x_t / sigma_data, sampling_timesteps[0].repeat(x_t.shape[0]))[0]
+            
+            for t in tqdm(sampling_timesteps):
+                trajectory_t.append(t.cpu().numpy())
+                trajectory_xt.append(x_t.detach().cpu().numpy())
+                
+                t_repeated = t.repeat(x_t.shape[0]).view(-1, 1, 1, 1)
+            
+                with torch.no_grad():
+                    dxt_dt = sigma_data * model_pretrained(x_t / sigma_data, t_repeated.flatten())
+                
+                v_x = torch.cos(t_repeated) * torch.sin(t_repeated) * dxt_dt / sigma_data
+                v_t = torch.cos(t_repeated) * torch.sin(t_repeated)
+                
+                with torch.no_grad():
+                    # Calculate JVP using torch.func.jvp
+                    F_theta, F_theta_grad, logvar = torch.func.jvp(
+                        model_wrapper, 
+                        (x_t / sigma_data, t_repeated),
+                        (v_x, v_t),
+                        has_aux=True
+                    )
+                    F_theta_grad = F_theta_grad.detach()
+                    F_theta_minus = F_theta.detach()
+                    
+                # Calculate predicted x0
+                pred_x0 = torch.cos(t) * x_t - torch.sin(t) * sigma_data * F_theta
+                trajectory_x0.append(pred_x0.detach().cpu().numpy())
+                
+                r = 1
+                # Calculate gradient g using JVP rearrangement
+                g = -torch.cos(t) * torch.cos(t) * (sigma_data * F_theta_minus - dxt_dt)
+                # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
+                second_term = -r * (torch.cos(t) * torch.sin(t) * x_t + sigma_data * F_theta_grad)
+                g = g + second_term
+                trajectory_grad.append(torch.sqrt(torch.square(g).sum(dim=(1, 2, 3))).cpu().numpy())
+                
+                next_t = sampling_timesteps[sampling_timesteps < t]
+                if len(next_t) == 0:
+                    next_t = 0
+                else:
+                    next_t = next_t[0]
+                
+                # Calculate x0 prediction and update x
+                x_t = torch.cos(t - next_t) * x_t - torch.sin(t - next_t) * dxt_dt
+                x_t = x_t.detach()
+                
+            trajectory_x0 = np.array(trajectory_x0)
+            trajectory_xt = np.array(trajectory_xt)
+            trajectory_t = np.array(trajectory_t)
+            trajectory_grad = np.array(trajectory_grad)
+                
+            diff = torch.abs(x_t - trajectory_guess).mean().item()
+            print(f"Consistency error: {diff:.4f}")
+            
+            discrete_grad = np.zeros_like(trajectory_x0)
+            discrete_grad[:-1] = -np.cos(trajectory_t[:-1])[:, None, None, None, None] * (trajectory_x0[1:] - trajectory_x0[:-1]) / (trajectory_t[1:] - trajectory_t[:-1])[:, None, None, None, None]
+            discrete_grad = np.sqrt(np.sum(np.square(discrete_grad), axis=(2, 3, 4)))
 
-        #    # Create figure with three subplots side by side
-        #    plt.figure(figsize=(16, 4))
+            # Create figure with two subplots side by side
+            plt.figure(figsize=(12, 4))
 
-        #    # Plot trajectory gradient 
-        #    plt.subplot(131)
-        #    plt.imshow(trajectory_grad, aspect='auto', cmap='RdBu', 
-        #              extent=[0, trajectory_grad.shape[1], 0, math.pi/2])
-        #    plt.colorbar(label='Gradient magnitude')
-        #    plt.title('Trajectory Gradient')
-        #    plt.xlabel('Initial X')
-        #    plt.ylabel('Time step')
-        #    
-        #    # Plot discrete gradient
-        #    plt.subplot(132)
-        #    plt.imshow(discrete_grad, aspect='auto', cmap='RdBu',
-        #              extent=[0, discrete_grad.shape[1], 0, math.pi/2])
-        #    plt.colorbar(label='Gradient magnitude')
-        #    plt.title('Discrete Gradient')
-        #    plt.xlabel('Initial X')
-        #    plt.ylabel('Time step')
+            # Get shared vmin/vmax for consistent scale
+            vmin = min(trajectory_grad.min(), discrete_grad.min())
+            vmax = max(trajectory_grad.max(), discrete_grad.max())
 
-        #    # Plot difference between gradients
-        #    plt.subplot(133)
-        #    grad_diff = discrete_grad / trajectory_grad
-        #    plt.imshow(grad_diff, aspect='auto', cmap='RdBu',
-        #              extent=[0, grad_diff.shape[1], 0, math.pi/2])
-        #    plt.colorbar(label='Absolute difference')
-        #    plt.title('Gradient Difference')
-        #    plt.xlabel('Initial X')
-        #    plt.ylabel('Time step')
+            # Plot trajectory gradient 
+            plt.subplot(121)
+            plt.imshow(trajectory_grad, aspect='auto', cmap='RdBu', 
+                      extent=[0, trajectory_grad.shape[1], 0, math.pi/2],
+                      vmin=vmin, vmax=vmax)
+            plt.colorbar(label='Gradient magnitude')
+            plt.title('Trajectory Gradient')
+            plt.xlabel('Initial X')
+            plt.ylabel('Time step')
+            
+            # Plot discrete gradient
+            plt.subplot(122)
+            plt.imshow(discrete_grad, aspect='auto', cmap='RdBu',
+                      extent=[0, discrete_grad.shape[1], 0, math.pi/2],
+                      vmin=vmin, vmax=vmax)
+            plt.colorbar(label='Gradient magnitude')
+            plt.title('Discrete Gradient')
+            plt.xlabel('Initial X')
+            plt.ylabel('Time step')
 
-        #    plt.tight_layout()
-        #    plt.show()
-        #    
-        #    # Plot average gradient difference along time axis
-        #    plt.figure(figsize=(8, 4))
-        #    mean_grad_diff = np.mean(grad_diff, axis=1)
-        #    plt.plot(np.linspace(math.pi/2, 0, len(mean_grad_diff)), mean_grad_diff)
-        #    plt.xlabel('Time step')
-        #    plt.ylabel('Average gradient ratio')
-        #    plt.title('Average Gradient Ratio vs Time')
-        #    plt.grid(True)
-        #    plt.show()
+            plt.tight_layout()
+            os.makedirs('outputs_consistency/gradients', exist_ok=True)
+            plt.savefig(f'outputs_consistency/gradients/epoch_{epoch:04d}.png')
+            plt.close()
         
 
 if __name__ == '__main__':
