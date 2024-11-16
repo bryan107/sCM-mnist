@@ -4,7 +4,7 @@ Unofficial implementation of "Simplifying, Stabilizing & Scaling Continuous-Time
 
 ![The Algorithm](https://github.com/user-attachments/assets/a09d384c-e353-4466-8317-041a96d9d536)
 
-This is a simple 2-file implementation of consistency training for MNIST. It can be easily adapted to consistency distillation in a few lines.
+This is a simple implementation of consistency training for MNIST.
 The code is intended to be short, and extremely easy to read and adapt to other use cases:
 
 ### train_consistency.py
