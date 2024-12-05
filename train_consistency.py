@@ -52,19 +52,22 @@ def train(device, epochs, batch_size, lr, extra_plots):
                                          download=True, transform=transform)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, 
                             num_workers=4, pin_memory=True, persistent_workers=True)
-    
-    # Will use this for jvp calcs
-    def model_wrapper(scaled_x_t, t):
-        pred, logvar = model(scaled_x_t, t.flatten(), return_logvar=True)
-        return pred, logvar
             
     step = 0
     for epoch in range(epochs):
         model.train()
         progress_bar = tqdm(dataloader, desc=f"Epoch {epoch}")
         
-        for batch, _ in progress_bar:
+        for batch, class_label in progress_bar:
             x0 = batch.to(device)
+    
+            # Will use this for jvp calcs
+            def model_wrapper(scaled_x_t, t):
+                pred, logvar = model(scaled_x_t, t.flatten(), return_logvar=True)
+                # If you want the model to be conditioned on class label (or anything else), just add it as an additional argument:
+                # You do not need to change anything else in the algorithm.
+                # pred, logvar = model(scaled_x_t, t.flatten(), class_label, return_logvar=True)
+                return pred, logvar
             
             # Sample noise from log-normal distribution
             sigma = torch.randn(x0.shape[0], device=x0.device).reshape(-1, 1, 1, 1)
