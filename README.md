@@ -14,7 +14,7 @@ Contains the core algorithm from the paper. The script will do consistency train
 train.py uses torch.func.jvp, which calculates the JVP in the forward pass. Only some operations support JVP, but most common operations are supported. 
 There are two exceptions: BatchNorm and Flash Attention. BatchNorm has some in-place operations that cause problems. The simple solution to this is to just avoid BatchNorm. I use GroupNorm in this implementation. Flash attention is more complicated, but the paper provides a way to calculate the JVP efficiently. I may implement this here in the future. Note that normal attention (see [here](https://github.com/NVlabs/edm/blob/main/training/networks.py) for one implementation) supports JVP.
 
-**Training Tip**: The paper claims that a prior weighting of `1 / sigma` in the loss lowers variance, but in some of my experiments (not on MNIST) I found that this destabilizes training. If you experience similar issues, replacing `1 / sigma` with just `1` may help.
+**Training Tip**: The paper claims that a prior weighting of `1 / sigma` in the loss lowers variance, but in many of my experiments I found that this destabilizes training. If you experience similar issues, replacing `1 / sigma` with just `1` may help.
 
 ### train_diffusion.py
 
