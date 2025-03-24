@@ -34,3 +34,18 @@ These changes are usually all that is necessary to ensure that training is stabl
 #### Toy
 
 There is also a folder called toy which contains some scripts for training a toy model. The script also outputs a plot of the model's gradients during training, which helps to visualize how consistency models work.
+
+## Results
+
+Diffusion model (100 steps)
+
+![epoch_0020](https://github.com/user-attachments/assets/bc3f8b54-c55d-452b-a59c-bc1b0e02c2e7)
+
+
+Consistency model (1 step)
+
+![epoch_0020](https://github.com/user-attachments/assets/4fcb78d0-c2f9-47e8-aa2a-ef8b1f173c06)
+
+Consistency model (2 step)
+
+![epoch_0020](https://github.com/user-attachments/assets/e13ed5d2-0c7b-463d-b267-976ea2ea235f)
