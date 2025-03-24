@@ -160,13 +160,12 @@ class DecoderBlock(nn.Module):
         self.conv1=ResidualBottleneck(in_channels//2,out_channels//2)
 
     def forward(self,x,x_shortcut,t=None):
-        x=self.upsample(x)
-        x=torch.cat([x,x_shortcut],dim=1)
-        x=self.conv0(x)
+        x = nn.functional.interpolate(x, size=x_shortcut.shape[2:], mode='bilinear', align_corners=False)
+        x = torch.cat([x, x_shortcut], dim=1)
+        x = self.conv0(x)
         if t is not None:
-            x=self.time_mlp(x,t)
-        x=self.conv1(x)
-
+            x = self.time_mlp(x, t)
+        x = self.conv1(x)
         return x        
 
 class Unet(nn.Module):
@@ -226,6 +225,6 @@ class Unet(nn.Module):
 if __name__=="__main__":
     x=torch.randn(1,1,28,28)
     t=torch.tensor([1.1], dtype=torch.float32)
-    model=Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4])
+    model=Unet(256, 1, 1, base_dim=64, dim_mults=[1, 2, 4])
     y=model(x,t)
     print(y.shape)

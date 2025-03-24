@@ -14,18 +14,17 @@ import matplotlib.pyplot as plt
 @click.command()
 @click.option("--device", default="cuda", help="Device to train on")
 @click.option("--epochs", default=200, help="Number of epochs to train")
-@click.option("--batch-size", default=256, help="Batch size")
-@click.option("--lr", default=1e-3, help="Learning rate")
+@click.option("--batch-size", default=128, help="Batch size")
+@click.option("--lr", default=3e-4, help="Learning rate")
 def train(device, epochs, batch_size, lr):
     # Setup model and optimizer
     model = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-3, betas=(0.9, 0.99))
     sigma_data = 0.5
     
-    P_mean = -0.4
+    P_mean = -1.73
     P_std = 1.4
     
-    # Load CIFAR-10
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5), (1.0))
@@ -94,6 +93,81 @@ def train(device, epochs, batch_size, lr):
             os.makedirs('outputs_diffusion/timesteps', exist_ok=True)
             plt.savefig(f'outputs_diffusion/timesteps/epoch_{epoch:04d}.png')
             plt.close()
+            
+        # Generate 16 random samples
+        z = torch.randn(16, 1, 28, 28, device=device, generator=torch.Generator().manual_seed(42)) * sigma_data
+        x_t = z  # At t=max, x_t is just noise
+        
+        # Sample using 100 steps
+        with torch.no_grad():
+            # Create linearly spaced timesteps from max_t to 0
+            # Use Karras timesteps for better sampling quality
+            # Formula: sigma_i = sigma_min * (sigma_max/sigma_min)^(1 - (i/(num_steps-1))^rho) where rho=7.0
+            rho = 7.0
+            i = torch.arange(100, device=device)
+            sigma = 0.002 * (80/0.002)**(1 - (i/(100-1))**rho)  # Karras sigma schedule
+            timesteps = torch.atan(sigma / sigma_data)  # Convert to t-space
+            
+            # Iteratively sample using first order solver
+            for i in range(len(timesteps)-1):
+                s = timesteps[i]  # Current timestep
+                t = timesteps[i+1]  # Next timestep
+                
+                # Get model prediction at current timestep
+                pred = model(x_t / sigma_data, s.repeat(16), return_logvar=False)
+                
+                # Apply first order solver formula
+                # xt = cos(s-t)*xs - sin(s-t)*sigma_d*F_theta(xs/sigma_d, s)
+                x_t = torch.cos(s - t) * x_t - torch.sin(s - t) * sigma_data * pred
+            
+            # Plot final samples
+            plt.figure(figsize=(12, 12))
+            for i in range(16):
+                plt.subplot(4, 4, i+1)
+                plt.imshow(x_t[i, 0].cpu().numpy(), cmap='gray')
+                plt.axis('off')
+            plt.tight_layout()
+            os.makedirs('outputs_diffusion/samples', exist_ok=True)
+            plt.savefig(f'outputs_diffusion/samples/epoch_{epoch:04d}.png')
+            plt.close()
+            
+            
+        # Estimate average loss at different timesteps
+        sample_img, _ = dataset[0]  # Use first image for loss estimation
+        sample_img = sample_img.unsqueeze(0).to(device)
+        
+        # Test 50 different timesteps
+        x = torch.logspace(math.log10(0.002), math.log10(80), 100, device=device)
+        test_t = torch.atan(x / sigma_data)
+        losses = []
+        
+        with torch.no_grad():
+            for curr_t in test_t:
+                # Generate 10 noisy versions for this timestep
+                z = torch.randn(10, 1, 28, 28, device=device) * sigma_data
+                t = torch.ones(10, device=device).view(-1, 1, 1, 1) * curr_t
+                x_t = torch.cos(t) * sample_img + torch.sin(t) * z
+                
+                # Get predictions and logvar
+                pred, logvar = model(x_t / sigma_data, t.flatten(), return_logvar=True)
+                logvar = logvar.view(-1, 1, 1, 1)
+                pred_x0 = torch.clamp(torch.cos(t) * x_t - torch.sin(t) * sigma_data * pred, min=-0.5, max=0.5)
+                
+                # Calculate loss with adaptive weighting
+                sigma = torch.tan(curr_t) * sigma_data
+                weight = 1 / sigma**2 + 1 / sigma_data**2
+                batch_loss = weight * torch.square(pred_x0 - sample_img)
+                losses.append(batch_loss.mean().item())
+        
+        # Plot loss curve
+        plt.figure(figsize=(10, 5))
+        plt.semilogx(torch.tan(test_t).cpu().numpy() * sigma_data, losses)
+        plt.xlabel('tan(t)*sigma_data (log scale)')
+        plt.ylabel('Mean Loss')
+        plt.title('Loss vs Noise Level')
+        os.makedirs('outputs_diffusion/losses', exist_ok=True)
+        plt.savefig(f'outputs_diffusion/losses/epoch_{epoch:04d}.png')
+        plt.close()
         
 
 if __name__ == '__main__':

@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 @click.option("--epochs", default=200, help="Number of epochs to train")
 @click.option("--batch-size", default=128, help="Batch size")
 @click.option("--lr", default=3e-5, help="Learning rate")
-@click.option("--extra-plots", is_flag=True, help="Generate additional training plots", default=False)
+@click.option("--extra-plots", is_flag=True, help="Generate additional training plots", default=True)
 def train(device, epochs, batch_size, lr, extra_plots):
     # Setup model and optimizer
     model = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
@@ -31,17 +31,17 @@ def train(device, epochs, batch_size, lr, extra_plots):
         
         model_pretrained = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
         model_pretrained.load_state_dict(torch.load('model.pt'), strict=False)
-        print("Loaded model from model.pt, performing cosistency distillation.")
+        print("Loaded model from model.pt, performing consistency distillation.")
         consistency_training = False
     else:
-        print("No model found, performing cosistency training.")
+        print("No model found, performing consistency training.")
         consistency_training = True
         
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2, betas=(0.9, 0.99))
     sigma_data = 0.5
     
-    P_mean = -1
-    P_std = 1.4
+    P_mean = -2
+    P_std = 1.6
     
     # Load CIFAR-10
     transform = transforms.Compose([
@@ -103,7 +103,7 @@ def train(device, epochs, batch_size, lr, extra_plots):
             F_theta_minus = F_theta.detach()
             
             # Warmup steps. 10000 was used in the paper. I'm using 1000 for MNIST since it's an easier dataset.
-            r = min(1.0, step / 10000)
+            r = min(1.0, step / 1000)
             # Calculate gradient g using JVP rearrangement
             g = -torch.cos(t) * torch.cos(t) * (sigma_data * F_theta_minus - dxt_dt)
             # Note that F_theta_grad is already multiplied by sin(t) cos(t) from the tangents. Doing it early helps with stability.
@@ -119,7 +119,8 @@ def train(device, epochs, batch_size, lr, extra_plots):
             # g = torch.clamp(g, min=-1, max=1)
             
             # Calculate loss with adaptive weighting
-            weight = 1 / sigma
+            # Paper uses weight = 1 / sigma, but I've found this to cause instability.
+            weight = 1
             loss = (weight / torch.exp(logvar)) * torch.square(F_theta - F_theta_minus - g) + logvar
             loss = loss.mean()
             
@@ -148,17 +149,34 @@ def train(device, epochs, batch_size, lr, extra_plots):
             continue
         
         z = torch.randn(16, 1, 28, 28, generator=torch.Generator().manual_seed(42)).to(device)
-        t = 1.56454 * torch.ones(16, device=device)
+        t0 = 1.56454 * torch.ones(16, device=device)
+        t1 = 1.1 * torch.ones(16, device=device)
         with torch.no_grad():
-            pred_x0 = torch.clamp(-sigma_data * model(z, t), min=-0.5, max=0.5)
+            pred_x0 = torch.clamp(-sigma_data * model(z, t0), min=-0.5, max=0.5)
+            
             plt.figure(figsize=(12, 12))
             for i in range(16):
                 plt.subplot(4, 4, i+1)
                 plt.imshow(pred_x0[i, 0].cpu().numpy(), cmap='gray')
                 plt.axis('off')
             plt.tight_layout()
-            os.makedirs('outputs_consistency/samples', exist_ok=True)
-            plt.savefig(f'outputs_consistency/samples/epoch_{epoch:04d}.png')
+            os.makedirs('outputs_consistency/samples_1step', exist_ok=True)
+            plt.savefig(f'outputs_consistency/samples_1step/epoch_{epoch:04d}.png')
+            plt.close()
+            
+            z = torch.randn(16, 1, 28, 28, generator=torch.Generator().manual_seed(43)).to(device)
+            t1_exp = t1.view(-1, 1, 1, 1)
+            x_t = torch.sin(t1_exp) * z * sigma_data + torch.cos(t1_exp) * pred_x0
+            pred_x0 = torch.clamp(torch.cos(t1_exp) * x_t - torch.sin(t1_exp) * sigma_data * model(x_t / sigma_data, t1), min=-0.5, max=0.5)
+        
+            plt.figure(figsize=(12, 12))
+            for i in range(16):
+                plt.subplot(4, 4, i+1)
+                plt.imshow(pred_x0[i, 0].cpu().numpy(), cmap='gray')
+                plt.axis('off')
+            plt.tight_layout()
+            os.makedirs('outputs_consistency/samples_2step', exist_ok=True)
+            plt.savefig(f'outputs_consistency/samples_2step/epoch_{epoch:04d}.png')
             plt.close()
         
         # Plot one noise sample with different timesteps
