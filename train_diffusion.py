@@ -51,15 +51,12 @@ def train(device, epochs, batch_size, lr):
             z = torch.randn_like(images) * sigma_data
             x_t = torch.cos(t) * images + torch.sin(t) * z
             
-            # Next we have to calculate g and F_theta. We can do this simultaneously with torch.func.jvp
-            pred, logvar = model(x_t / sigma_data, t.flatten(), return_logvar=True)
+            pred_v_t, logvar = model(x_t / sigma_data, t.flatten(), return_logvar=True)
+            pred_v_t = pred_v_t * sigma_data
             logvar = logvar.view(-1, 1, 1, 1)
             
-            pred_x0 = torch.cos(t) * x_t - torch.sin(t) * sigma_data * pred
-            
-            # Calculate loss with adaptive weighting
-            weight = 1 / sigma**2 + 1 / sigma_data**2
-            loss = (weight / torch.exp(logvar)) * torch.square(pred_x0 - images) + logvar
+            v_t = torch.cos(t) * z - torch.sin(t) * images
+            loss = (1 / torch.exp(logvar)) * torch.square((pred_v_t - v_t) / sigma_data) + logvar
             loss = loss.mean()
             
             optimizer.zero_grad()
@@ -95,7 +92,7 @@ def train(device, epochs, batch_size, lr):
             plt.close()
             
         # Generate 16 random samples
-        z = torch.randn(16, 1, 28, 28, device=device, generator=torch.Generator().manual_seed(42)) * sigma_data
+        z = torch.randn(16, 1, 28, 28, device=device, generator=torch.Generator(device=device).manual_seed(42)) * sigma_data
         x_t = z  # At t=max, x_t is just noise
         
         # Sample using 100 steps
