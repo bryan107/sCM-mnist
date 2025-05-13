@@ -13,13 +13,14 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 
 @click.command()
 @click.option("--device", default="cuda", help="Device to train on")
-@click.option("--epochs", default=200, help="Number of epochs to train")
+@click.option("--epoch-start", default=100, help="starting epoch to compute FID")
+@click.option("--epoch-end", default=135, help="Stop epoch (inclusive) to compute FID")
 @click.option("--batch-size", default=128, help="Batch size")
 @click.option("--lr", default=3e-5, help="Learning rate")
 @click.option("--extra-plots", is_flag=True, help="Generate additional training plots", default=True)
 @click.option("--enable-wandb", is_flag=True, help="Upload to Wandb", default=False)
-@click.option("--model-path", default="'models/consistency/model_consistency_0.pt'", help="model to evaluate")
-def compute_fid(device, epochs, lr, enable_wandb, model_path):
+@click.option("--model-dir", default="models/consistency", help="model to evaluate")
+def compute_fid(device, epoch_start, epoch_end, lr, enable_wandb, model_dir):
     if enable_wandb:
         wandb.init(
             project="MNIST_consistency_distillation_FID_new",
@@ -44,9 +45,10 @@ def compute_fid(device, epochs, lr, enable_wandb, model_path):
     indices = random.sample(range(len(dataset)), sample_n)
     real_images = torch.stack([dataset[i][0] for i in indices])
 
-    for epoch in range(131,epochs):
+    for epoch in range(epoch_start, epoch_end + 1):
         # Setup model and optimizer
         model = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
+        model_path = os.path.join(model_dir, f"model_consistency_{epoch}.pt")
         print(f"load model {model_path}")
         if os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path), strict=False)
@@ -54,18 +56,7 @@ def compute_fid(device, epochs, lr, enable_wandb, model_path):
             print(f"Loaded model from {model_path}, compute FID...")
         else:
             print("No model found, skip FID computation.")
-        #
-        #
-        #
-        #
-        # Everything below is just for visualization and can be removed safely
-        #
-        #
-        #
-        #
-        #
-        
-        
+                
         #########
         # FID Evaluation
         #########
