@@ -4,3 +4,9 @@ tqdm>=4.66.5
 matplotlib>=3.9.2
 click>=8.1.6
 numpy>=1.26.3
+wandb
+scipy
+pytorch-fid
+torchmetrics
+torch-fidelity
+types-torchvision

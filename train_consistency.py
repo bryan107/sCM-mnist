@@ -1,16 +1,21 @@
 import math
 import os
+import random
 import click
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-import torchvision
-import torchvision.transforms as transforms
-from tqdm import tqdm
+import torchvision # type: ignore
+import torchvision.transforms as transforms # type: ignore
+from tqdm import tqdm # type: ignore
 from toy.toy_utils import calc_karras_sigmas
 from unet import Unet
 import matplotlib.pyplot as plt
+import wandb
+
+from torchvision.transforms import Compose, Resize, Lambda
+from torchmetrics.image.fid import FrechetInceptionDistance
 
 @click.command()
 @click.option("--device", default="cuda", help="Device to train on")
@@ -18,20 +23,32 @@ import matplotlib.pyplot as plt
 @click.option("--batch-size", default=128, help="Batch size")
 @click.option("--lr", default=3e-5, help="Learning rate")
 @click.option("--extra-plots", is_flag=True, help="Generate additional training plots", default=True)
-def train(device, epochs, batch_size, lr, extra_plots):
+@click.option("--enable-wandb", is_flag=True, help="Upload to Wandb", default=False)
+@click.option("--model-path", default="model.pt", help="Learning rate")
+def train(device, epochs, batch_size, lr, extra_plots, enable_wandb, model_path):
+    if enable_wandb:
+        wandb.init(
+            project="MNIST_consistency_distillation_2",
+            entity="actrec",
+            config={
+                'lr': lr,
+            }, 
+            name=f"Consistency Training lr:{lr}"
+        ) 
+
     # Setup model and optimizer
     model = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
     model_pretrained = None
-    
-    if os.path.exists('model.pt'):
-        model.load_state_dict(torch.load('model.pt'), strict=False)
+
+    if os.path.exists(model_path):
+        model.load_state_dict(torch.load(model_path), strict=False)
         
         # Reset logvar weights for CM
         model.logvar_linear = nn.Linear(model.logvar_linear.in_features, model.logvar_linear.out_features).to(device)
         
         model_pretrained = Unet(256, 1, 1, base_dim=64, dim_mults=[2, 4]).to(device)
-        model_pretrained.load_state_dict(torch.load('model.pt'), strict=False)
-        print("Loaded model from model.pt, performing consistency distillation.")
+        model_pretrained.load_state_dict(torch.load(model_path), strict=False)
+        print(f"Loaded model from {model_path}, performing consistency distillation.")
         consistency_training = False
     else:
         print("No model found, performing consistency training.")
@@ -132,7 +149,10 @@ def train(device, epochs, batch_size, lr, extra_plots):
             progress_bar.set_postfix({"loss": loss.item(), "grad_norm": grad_norm.item()})
             step += 1
             
-        torch.save(model.state_dict(), f'model_consistency.pt')
+        if enable_wandb:
+            wandb.log({'Train_loss': loss.item()}, step=epoch)
+
+        torch.save(model.state_dict(), f'models/consistency/model_consistency_{epoch}.pt')
         
         #
         #
@@ -148,6 +168,7 @@ def train(device, epochs, batch_size, lr, extra_plots):
         if not extra_plots:
             continue
         
+        print("Save Sample", end='...')
         z = torch.randn(16, 1, 28, 28, generator=torch.Generator().manual_seed(42)).to(device)
         t0 = 1.56454 * torch.ones(16, device=device)
         t1 = 1.1 * torch.ones(16, device=device)
@@ -178,7 +199,38 @@ def train(device, epochs, batch_size, lr, extra_plots):
             os.makedirs('outputs_consistency/samples_2step', exist_ok=True)
             plt.savefig(f'outputs_consistency/samples_2step/epoch_{epoch:04d}.png')
             plt.close()
+        print("DONE")
         
+        #########
+        # FID Evaluation
+        #########
+        print("Compute FID", end="...")
+        sample_n = 1_000
+        indices = random.sample(range(len(dataset)), sample_n)
+        real_images = torch.stack([dataset[i][0] for i in indices])
+
+        z = torch.randn(sample_n, 1, 28, 28, generator=torch.Generator().manual_seed(42)).to(device)
+        t0 = 1.56454 * torch.ones(sample_n, device=device)
+        t1 = 1.1 * torch.ones(sample_n, device=device)
+        with torch.no_grad():
+            pred_x0 = torch.clamp(-sigma_data * model(z, t0), min=-0.5, max=0.5)
+            generated_imsages = pred_x0
+            fid_score_1 = calculate_fid(real_images, generated_imsages, device='cuda')
+            
+            z = torch.randn(sample_n, 1, 28, 28, generator=torch.Generator().manual_seed(43)).to(device)
+            t1_exp = t1.view(-1, 1, 1, 1)
+            x_t = torch.sin(t1_exp) * z * sigma_data + torch.cos(t1_exp) * pred_x0
+            pred_x0 = torch.clamp(torch.cos(t1_exp) * x_t - torch.sin(t1_exp) * sigma_data * model(x_t / sigma_data, t1), min=-0.5, max=0.5)
+            generated_imsages = pred_x0
+            fid_score_2 = calculate_fid(real_images, generated_imsages, device='cuda')
+            
+            print(f"FID score 1: {fid_score_1}, FID score 2: {fid_score_2}")
+
+        if enable_wandb:
+            wandb.log({'Train_CD_1_FID': fid_score_1}, step=epoch)
+            wandb.log({'Train_CD_2_FID': fid_score_2}, step=epoch)
+
+
         # Plot one noise sample with different timesteps
         # Sample one image from the dataset for visualization
         sample_img, _ = dataset[0]
@@ -267,7 +319,8 @@ def train(device, epochs, batch_size, lr, extra_plots):
                 
             diff = torch.abs(x_t - trajectory_guess).mean().item()
             print(f"Consistency error: {diff:.4f}")
-            
+            if enable_wandb:
+                wandb.log({'consistency error (val)': round(diff, 4)}, step=epoch)
             discrete_grad = np.zeros_like(trajectory_x0)
             discrete_grad[:-1] = -np.cos(trajectory_t[:-1])[:, None, None, None, None] * (trajectory_x0[1:] - trajectory_x0[:-1]) / (trajectory_t[1:] - trajectory_t[:-1])[:, None, None, None, None]
             discrete_grad = np.sqrt(np.sum(np.square(discrete_grad), axis=(2, 3, 4)))
@@ -303,7 +356,47 @@ def train(device, epochs, batch_size, lr, extra_plots):
             os.makedirs('outputs_consistency/gradients', exist_ok=True)
             plt.savefig(f'outputs_consistency/gradients/epoch_{epoch:04d}.png')
             plt.close()
+    
+    wandb.finish()
+
+def calculate_fid(real_images, generated_images, device='cuda'):
+    """
+    Calculates FID between real and generated MNIST images.
+    
+    Args:
+        real_images (Tensor): Real images (N, 1, H, W), values in [0, 1] or [-1, 1].
+        generated_images (Tensor): Generated images (N, 1, H, W), same range as real.
+        device (str): 'cuda' or 'cpu'.
         
+    Returns:
+        float: FID score.
+    """
+    # Convert to 3 channels and resize to 299x299 for InceptionV3
+    transform = Compose([
+        Lambda(lambda x: (x + 1) / 2 if x.min() < 0 else x),  # Rescale to [0, 1] if needed
+        Lambda(lambda x: x.repeat(3, 1, 1)),  # (1, H, W) -> (3, H, W)
+        Resize((299, 299))
+    ])
+    
+    real_images = real_images.to(device)
+    generated_images = generated_images.to(device)
+
+    fid = FrechetInceptionDistance(feature=2048).to(device)
+
+    with torch.no_grad():
+        for img in real_images:
+            img = transform(img)
+            img = img.clamp(0, 1) * 255  # Ensure values in [0, 255]
+            img = img.to(torch.uint8)
+            fid.update(img.unsqueeze(0), real=True)
+
+        for img in generated_images:
+            img = transform(img)
+            img = img.clamp(0, 1) * 255  # Ensure values in [0, 255]
+            img = img.to(torch.uint8)
+            fid.update(img.unsqueeze(0), real=False)
+
+    return fid.compute().item()
 
 if __name__ == '__main__':
     train()
