@@ -8,16 +8,14 @@ import torchvision.transforms as transforms # type: ignore
 from unet import Unet
 import wandb
 
-from torchvision.transforms import Compose, Resize, Lambda
+from torchvision.transforms import Compose, Lambda
 from torchmetrics.image.fid import FrechetInceptionDistance
 
 @click.command()
 @click.option("--device", default="cuda", help="Device to train on")
-@click.option("--epoch-start", default=100, help="starting epoch to compute FID")
-@click.option("--epoch-end", default=135, help="Stop epoch (inclusive) to compute FID")
-@click.option("--batch-size", default=128, help="Batch size")
+@click.option("--epoch-start", default=131, help="starting epoch to compute FID")
+@click.option("--epoch-end", default=131, help="Stop epoch (inclusive) to compute FID")
 @click.option("--lr", default=3e-5, help="Learning rate")
-@click.option("--extra-plots", is_flag=True, help="Generate additional training plots", default=True)
 @click.option("--enable-wandb", is_flag=True, help="Upload to Wandb", default=False)
 @click.option("--model-dir", default="models/consistency", help="model to evaluate")
 def compute_fid(device, epoch_start, epoch_end, lr, enable_wandb, model_dir):
@@ -99,9 +97,9 @@ def calculate_fid(real_images, generated_images, device='cuda'):
     """
     # Convert to 3 channels and resize to 299x299 for InceptionV3
     transform = Compose([
-        Lambda(lambda x: (x + 1) / 2 if x.min() < 0 else x),  # Rescale to [0, 1] if needed
         Lambda(lambda x: x.repeat(3, 1, 1)),  # (1, H, W) -> (3, H, W)
-        Resize((299, 299))
+        Lambda(lambda x: x + 0.5),  # Rescale to [0, 1] from [-0.5]
+        Lambda(lambda x: x.clamp(0, 1)),  # Ensure values in [0, 1]
     ])
     
     real_images = real_images.to(device)
